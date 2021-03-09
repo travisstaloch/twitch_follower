@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.1/css/bulma.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma-tooltip@3.0.2/dist/css/bulma-tooltip.min.css">
+    <script defer src="https://use.fontawesome.com/releases/v5.14.0/js/all.js"></script>
+    <script src="https://unpkg.com/vue@next"></script>
+    <script src="https://unpkg.com/vue-router@next"></script>
+    <link rel="stylesheet" href="style.css">
+    <script src="util.js"></script>
+    <script src="locales.js"></script>
+    <title>twitch follower</title>
+</head>
+
+<!-- 
+TODO 
+x - recent videos
+    - fetch all pages of follows to allow make recent videos work
+    - invalidation: username -> [follows] -> [videos]
+        - page load or username change 
+            - fetch user record. if good. save to local storage
+            - worker 
+                - (broken) fetch remaining _total follows and append original array 
+                - loop over follows and fetch videos for each
+                - save total of 50 newest videos, fetch 10 newest videos for each follow
+                - use binary search insertion
+    - show a loading message
+x - paging follows - no paging, just fetch all
+- paging videos
+- oauth token
+    - follow channel https://dev.twitch.tv/docs/v5/reference/users/#follow-channel
+x - local storage
+    - store username
+    - time zone picker
+x - error messages
+x - link from recent video to channel videos
+    - hide if already on videos
+- legacy follows api is broken. currently the offset parameter is ignored so only the first page is good.
+    - https://discuss.dev.twitch.tv/t/legacy-api-get-user-follows-offset-parameter-ignored
+- sort follows by last online
+- show 'live' channel indicator
+-->
+
+<body>
+    <script type="text/x-template" id="navbar">
+    <div class="container"><div class="columns">
+        <div class="column is-1">
+            <button class="" @click="router.back()"><i class="fas fa-arrow-left"></i></button>
+        </div>
+        <div class="column">
+            <nav id="navbar" class="navbar" role="navigation" aria-label="main navigation">
+                <div class="container">
+                <div class="navbar-brand">
+                    <div class="image is-64x64"> <img src="logo.png"></div>
+                    <a role="button" class="navbar-burger burger" aria-label="menu" aria-expanded="false"
+                        data-target="navbar-menu" @click="menu_active = !menu_active;">
+                        <span></span><span></span><span></span>
+                    </a>
+                </div>
+                
+                <div id="navbar-menu" :class="{'navbar-menu': true, 'is-active': menu_active}">
+                    <div class="navbar-start">
+                        <router-link class="navbar-item" to="/">Home </router-link>
+                        <router-link class="navbar-item" to="/recent-videos">Recent Videos</router-link>
+                        <router-link class="navbar-item" to="/settings">Settings</router-link>
+                    </div>
+                    
+                    <div class="navbar-end">
+                        <div class="navbar-item">
+                            <div class="buttons">
+                            <div class="control">
+                            <input class="button is-primary m2" v-show="!editing_username && username_cached !== null" v-model="username"
+                                @click="editing_username = true; this.$nextTick(() => { this.$refs.editUsername.focus(); });" />
+                            <input ref="editUsername" class="input is-primary m2" v-show="editing_username || username_cached === null"
+                                v-model="username" @blur="usernameUpdated()" @keyup.enter="usernameUpdated()" placeholder="Username" />
+                            </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+    </div></div>
+</div>
+</script>
+
+    <script type="text/x-template" id="follows-view">
+    <navbar />
+    <Suspense>
+        <template #default>
+            <follows />
+        </template>
+        <template #fallback>
+            <span>Loading...</span>
+        </template>
+    </Suspense>
+</script>
+
+    <script type="text/x-template" id="follows">
+    <div id="follows" class="container pl-4">
+        <div class="columns" v-for="follow in follows.follows" :key="follow.channel._id" >
+            <div class="column is-one-fifth">
+                <a :href="follow.channel.url"><div class="image is-128x128 mt-2"><img :src="follow.channel.logo" alt="logo" /></div></a>
+            </div>
+            <div class="column">
+                <div><strong>{{follow.channel.name}}</strong></div>
+                <div>last broadcast: {{ formatDate(follow.channel.updated_at, locale)  }}</div>
+                <div>{{follow.channel.status}}</div>
+                <router-link class="button" :to="{path: '/videos/' + follow.channel._id}" >Videos</router-link>
+                <router-link class="button" :to="{path: '/follows/' +  follow.channel.name}">Follows</router-link>
+            </div>
+            <div class="column">
+                <div>{{follow.channel.description}}</div>
+                <button aria-expanded="false" :data-target="'follow-json-text' + follow.channel._id" @click="toggleHidden">show json</button>
+                <div :id="'follow-json-text' + follow.channel._id" hidden>
+                    <p>{{follow}}</p>
+                </div> 
+            </div>
+        </div>
+    </div>
+</script>
+
+    <script type="text/x-template" id="videos-view">
+    <navbar />
+    <Suspense>
+        <template #default>
+            <videos />
+        </template>
+        <template #fallback>
+            <span>Loading...</span>
+        </template>
+    </Suspense>
+</script>
+
+    <script type="text/x-template" id="pager">
+        <div class="container">
+            <router-link class="button" :to="path">Next</router-link>
+        </div>
+</script>
+    <script type="text/x-template" id="videos">
+<div id="videos" class="container pl-4">
+    <pager v-if="name === 'videos'" :path="'/videos/' + channel_id + '/offset/' + (parseInt(offset) + videos.videos.length)" />
+    <div class="video columns mb-6" @click="" v-for="video in videos.videos" :key="video._id">
+        <div class="column is-4">
+            <div class="animated-preview-contianer">
+                <a class="mt-2" :href="video.url">
+                    <img class="preview-static" :src="video.preview.large" alt="preview" />
+                    <div class="animated-preview-img" :style="{'background-image': 'url(' + video.animated_preview_url + ')'}"></div>
+                </a>
+            </div>
+        </div>
+        <div class="column">
+            <div><strong>{{video.title}}</strong></div>
+            <div>{{formatDate(video.recorded_at, locale)}}</div>
+            <div>{{video.game}}</div>
+            <div>{{formatSeconds(video.length)}} views: {{video.views}}</div>
+            <a class="button" :href="video.channel.url" target="_blank">twitch.tv/{{video.channel.name}}</a>
+            <router-link v-if="name != 'videos'" class="button" :to="'/videos/' + video.channel._id">channel videos</router-link>
+        </div>
+        <div class="column">
+            <button aria-expanded="false" :data-target="'video-json-text' + video.channel._id" @click="toggleHidden">show json</button>
+            <div :id="'video-json-text' + video.channel._id" hidden>
+                <div>{{name}}</div>
+                <div><p>{{video}}</p></div>
+            </div> 
+        </div>
+    </div>
+</div>
+</script>
+
+    <script type="text/x-template" id="recent-videos-view">
+    <navbar />
+    <recent-videos v-if="recent_videos != null" />
+    <div v-else class="messages-container" >
+        <div class="message info">Loading... {{recent_videos_progress}} / {{recent_videos_progress_segments}}</div>
+    </div>
+</script>
+
+    <script type="text/x-template" id="settings">
+    <navbar />
+    <div id="settings" class="container pl-4">
+        <div class="columns">
+            <div class="column is-3 has-text-right">Enable recent videos</div>
+            <div class="column">
+                <input type="checkbox" name="recent_videos_enable" id="recent_videos_enable" v-model="recent_videos_enable" />
+            </div>
+        </div>
+        <div class="columns" data-tooltip="Change the time format">
+            <div class="column is-3 has-text-right">Timezone Locale</div>
+            <div class="column">
+                <select name="locales" id="locales" v-model="locale">
+                    <option disabled value="">Please select one</option>
+                    <option v-for="(lang, locale) in locale_languages" :value="locale">{{lang}}</option>
+                </select></div>
+        </div>
+    </div>
+</script>
+    <div id="app">
+        <router-view></router-view>
+        <div id="messages">
+            <!-- <button @click="showMessage('Message')">Add Message</button>
+            <div class="message info">Info</div>
+            <div class="message warning">Warning</div>
+            <div class="message error">Error</div> -->
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, watch, defineAsyncComponent } = Vue;
+        const { createRouter, createWebHistory, createWebHashHistory, useRoute, useRouter } = VueRouter;
+
+        const api_base_url = 'https://api.twitch.tv';
+        const kraken_url = `${api_base_url}/kraken`;
+        const helix_url = `${api_base_url}/helix`;
+
+        function useLocalStorage(key, default_value = null) {
+            let init = localStorage.getItem(key)
+            const variable = ref(init ? JSON.parse(init) : default_value)
+            watch(
+                () => variable.value,
+                to => localStorage.setItem(key, JSON.stringify(to)),
+                { deep: true }
+            )
+            return variable
+        }
+
+        let username = useLocalStorage('username');
+        let editing_username = ref(username.value == null);
+        let username_cached = ref(username.value);
+        let user = useLocalStorage('user');
+        let follows = ref({});
+        let recent_videos = ref(null);
+        let recent_videos_enable = useLocalStorage('recent_videos_enable', true);
+        let recent_videos_progress = ref(0);
+        let videos = ref(null);
+        let locale = useLocalStorage('locale', 'en-US');
+
+        const worker = new Worker('worker.js');
+        worker.addEventListener('message', (d) => {
+            // console.log('recieved message from worker', d.data);
+            if (d.data.message_type == 'follows') {
+                if (Object.keys(follows.value).length === 0)
+                    follows.value = d.data.follows;
+                else follows.value.follows += d.data.follows.follows;
+            } else if (d.data.message_type == 'recent_videos') {
+                recent_videos.value = {
+                    _total: d.data.recent_videos.length,
+                    videos: d.data.recent_videos.map(element => element.video)
+                };
+                // console.log(recent_videos);
+            } else if (d.data.message_type == 'recent_videos_progress') {
+                recent_videos_progress.value = d.data.recent_videos_progress;
+            }
+        });
+
+        async function fetchUser(name) {
+            // console.log("fetchUser", name);
+            if (!name) return false;
+            const users = await useApi(
+                `${kraken_url}/users/?login=${name}`,
+                "users");
+            if (users[0] === undefined) {
+                errorMessage('bad username');
+                return null;
+            }
+            return users[0];
+        }
+
+        async function fetchUserFollows(_user, fetch_recent_videos) {
+            // console.log("fetchUserFollows", 'fetch_recent_videos', fetch_recent_videos, _user);
+            if (!_user) return false;
+            try {
+                const follows_limit = 100;
+                if (fetch_recent_videos && recent_videos_enable.value) {
+                    worker.postMessage({ base_url: kraken_url, user_id: _user._id, limit: follows_limit });
+                }
+                else {
+                    follows.value = await useApi(`${kraken_url}/users/${_user._id}/follows/channels?limit=${follows_limit}&offset=0`);
+                }
+                return true;
+            } catch (e) {
+                errorMessage(e);
+                console.error(e);
+                return false;
+            }
+        }
+
+        const Navbar = {
+            template: '#navbar',
+            setup() {
+                let menu_active = ref(false);
+                return {
+                    username,
+                    username_cached,
+                    editing_username,
+                    menu_active,
+                    async usernameUpdated() {
+                        if (username.value != username_cached.value) {
+                            const new_user = await fetchUser(username.value);
+                            if (new_user != null) user.value = new_user;
+                            if (await fetchUserFollows(new_user, true)) {
+                                username_cached.value = username.value;
+                                router.push({ path: '/follows/' + username.value });
+                            } else {
+                                username.value = username_cached.value;
+                            }
+                        }
+                        editing_username.value = false;
+                    },
+                    router: useRouter(),
+                };
+            },
+        };
+
+        const Follows = Vue.defineAsyncComponent(() =>
+            new Promise((resolve, reject) => {
+                resolve({
+                    template: "#follows",
+                    async setup() {
+                        const { params: { path_username } } = useRoute();
+                        await fetchUserFollows(await fetchUser(path_username), recent_videos.value === null);
+                        return {
+                            username,
+                            user,
+                            follows,
+                            formatDate,
+                            formatSeconds,
+                            toggleHidden,
+                            locale,
+                        };
+                    },
+                    watch: {
+                        '$route.params.path_username': async function (name, old) {
+                            await fetchUserFollows(await fetchUser(name), false);
+                        }
+                    },
+                })
+            }));
+        const FollowsView = {
+            template: "#follows-view",
+            components: { Follows, Navbar },
+            setup() {
+                if (router.currentRoute.value.fullPath == '/welcome' && username.value != null) {
+                    router.push({ path: "/follows/" + username.value });
+                } else {
+                    // TODO show welcome message
+                }
+            }
+        };
+
+        const Videos = Vue.defineAsyncComponent(() =>
+            new Promise((resolve, reject) => {
+                resolve({
+                    template: "#videos",
+                    async setup() {
+                        const { params: { channel_id, offset } } = useRoute();
+                        videos.value = await useApi(`${kraken_url}/channels/${channel_id}/videos?offset=${offset}&broadcast_type=archive&limit=100`);
+                        return {
+                            videos,
+                            formatDate,
+                            formatSeconds,
+                            toggleHidden,
+                            name: 'videos',
+                            locale,
+                            offset,
+                            channel_id,
+                        };
+                    },
+                    components: { Pager },
+                    watch: {
+                        '$route.params.offset': async function (offset, old) {
+                            // const { params: { channel_id, offset } } = useRoute();
+                            this.videos.value = await useApi(`${kraken_url}/channels/${this.channel_id}/videos?offset=${offset}&broadcast_type=archive&limit=100`);
+                        }
+                    },
+                })
+            }));
+        const VideosView = { template: "#videos-view", components: { Videos, Navbar } };
+        const Pager = { template: "#pager", props: ['path'] };
+
+        const RecentVideos = {
+            template: "#videos",
+            setup() {
+                return {
+                    videos: recent_videos,
+                    formatDate,
+                    formatSeconds,
+                    toggleHidden,
+                    name: 'recent-videos',
+                    locale,
+                };
+            },
+        };
+        const RecentVideosView = {
+            template: "#recent-videos-view",
+            components: { RecentVideos, Navbar },
+            data() {
+                return {
+                    recent_videos,
+                    recent_videos_progress,
+                    recent_videos_progress_segments,
+                }
+            },
+        };
+
+        const NotFoundComponent = { template: '<p>Page not found</p>' };
+        const Settings = {
+            template: '#settings',
+            components: { Navbar },
+            setup() {
+                return {
+                    locale_languages,
+                    locale,
+                    recent_videos_enable,
+                }
+            },
+        };
+
+        const router = createRouter({
+            history: createWebHashHistory(),
+            routes: [
+                { path: '/', redirect: { path: '/welcome' } },
+                { path: '/follows/:path_username', component: FollowsView },
+                {
+                    path: '/videos/:channel_id',
+                    redirect: to => {
+                        const { channel_id } = to.params;
+                        return { path: '/videos/' + channel_id + '/offset/0' };
+                    }
+                },
+                { path: '/videos/:channel_id/offset/:offset', component: VideosView },
+                { path: '/recent-videos', component: RecentVideosView },
+                { path: '/settings', component: Settings },
+                { path: '/welcome', component: FollowsView },
+            ],
+        });
+
+        const app = Vue.createApp({
+            setup() {
+                if (username.value) { router.push({ path: "/follows/" + username.value }); }
+                // router.push({ path: "/settings" });
+                return {}
+            },
+            data() {
+                return {
+                    showMessage,
+                    settings,
+                }
+            },
+        });
+        app.use(router);
+        app.mount("#app");
+        window.vm = app;
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,93 @@
+#follows .columns:hover,  
+#videos .columns:hover  {
+    background-color: beige;
+}
+.follow, .video {text-decoration: none; color: black;}
+
+@keyframes animate-preview-img {
+    100% {
+        background-position: 0 -1800px;        
+    }
+}
+
+.animated-preview-contianer {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+.animated-preview-img {
+    width: 320px;
+    height: 180px;
+    top: 0px;
+    opacity: 0;
+    animation: animate-preview-img 10s steps(10) infinite;
+    position: absolute;
+}
+
+.preview-static {
+    width: 320px;
+    height: 180px;
+    top: 0px;
+    opacity: 1;
+    position: absolute;
+}
+.animated-preview-contianer:hover .animated-preview-img {
+    top: 0px;
+    opacity: 1;
+    transition: all .2s;
+}
+.animated-preview-contianer:hover .preview-static {
+    top: 0px;
+    opacity: 0;
+    transition: all .2s;
+}
+
+#messages {
+    position: absolute;
+    top: 0px;
+    width: 100%;
+    text-align: center;
+    z-index: 100;
+}
+#messages > .message {
+    animation:show-message 3s 1;
+    -webkit-animation:show-message 3s 1;
+    animation-fill-mode: forwards;
+    
+    animation-delay:2s;
+    -webkit-animation-delay:2s; /* Safari and Chrome */
+    -webkit-animation-fill-mode: forwards;
+}
+
+@keyframes show-message{
+    from {opacity :1;}
+    to {opacity :0;}
+}
+
+@-webkit-keyframes show-message{
+    from {opacity :1;}
+    to {opacity :0;}
+}
+
+.message {
+    padding: 0.5rem;
+    border-radius: 0.3rem;
+    border: dashed grey 2px;
+    margin-left: 2rem;
+    margin-right: 2rem;
+}
+.message.info {
+    background-color: lightgreen;
+}
+.message.warning {
+    background-color: lightyellow;
+}
+.message.error {
+    background-color: pink;
+}
+
+.messages-container {
+    width: 100%;
+    text-align: center;
+}
